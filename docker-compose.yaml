@@ -1,0 +1,87 @@
+services:
+  zookeeper:
+    restart: unless-stopped
+    image: ${REGISTRY}/isbj-redesign-zookeeper:3
+
+  kafka:
+    restart: unless-stopped
+    image: ${REGISTRY}/isbj-redesign-kafka:3
+    depends_on:
+      - zookeeper
+    entrypoint:
+      - "/opt/kafka/bin/kafka-server-start.sh"
+      - "/opt/kafka/config/server.properties"
+      - "--override"
+      - "zookeeper.connect=zookeeper:2181"
+      - "--override"
+      - "listeners=PLAINTEXT://:19092"  # Simple plaintext for internal
+      - "--override"
+      - "advertised.listeners=PLAINTEXT://kafka:19092"
+      - "--override"
+      - "listener.security.protocol.map=PLAINTEXT:PLAINTEXT"
+      - "--override"
+      - "inter.broker.listener.name=PLAINTEXT"
+      - "--override"
+      - "broker.id=${KAFKA_BROKER_ID}"
+    environment:
+      - "INTERNAL_HOSTNAME=kafka"
+
+  kafka-rest-proxy:
+    restart: unless-stopped
+    image: confluentinc/cp-kafka-rest:7.5.0
+    depends_on:
+      - kafka
+    ports:
+      - "9093:8082"  # Map external 9093 to internal 8082
+    volumes:
+      - ./rest-proxy/password-file:/etc/kafka-rest/password-file
+      - ./rest-proxy/jaas.conf:/etc/kafka-rest/jaas.conf
+    environment:
+      KAFKA_REST_HOST_NAME: kafka-rest-proxy
+      KAFKA_REST_BOOTSTRAP_SERVERS: 'kafka:19092'
+      KAFKA_REST_LISTENERS: 'http://0.0.0.0:8082'
+
+      KAFKA_REST_AUTHENTICATION_METHOD: 'BASIC'
+      KAFKA_REST_AUTHENTICATION_REALM: 'KafkaRest'
+      KAFKA_REST_AUTHENTICATION_ROLES: 'admin,user'
+      KAFKAREST_OPTS: '-Djava.security.auth.login.config=/etc/kafka-rest/jaas.conf'
+
+  console:
+    restart: unless-stopped
+    image: tchiotludo/akhq
+    environment:
+      AKHQ_CONFIGURATION: |
+        akhq:
+          connections:
+            eventbus:
+              properties:
+                bootstrap.servers: "kafka:19092"
+                # No SSL needed for internal communication
+    ports:
+      - ${AKHQ_PORT}:8080
+    depends_on:
+      - kafka
+
+  console-redpanda:
+    restart: unless-stopped
+    image: docker.redpanda.com/redpandadata/console
+    depends_on:
+      - kafka
+    ports:
+      - ${REDPANDA_PORT}:8080
+    environment:
+      - KAFKA_BROKERS=kafka:19092
+      - SERVER_COMPRESSIONLEVEL=0
+
+  minio:
+    restart: unless-stopped
+    image: quay.io/minio/minio:latest
+    ports:
+      - ${MINIO_API_PORT}:9000
+      - ${MINIO_CONSOLE_PORT}:9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./minio/data:/data
+    command: server /data --console-address ":9001"
